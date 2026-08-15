@@ -2,7 +2,7 @@
 
 An in-progress data engineering project that combines **Kafka**, **Spark Structured Streaming**, **Airflow**, **PostgreSQL**, and **Docker** to model real-time payment ingestion, validation, de-duplication, scheduled reconciliation, and data-quality reporting.
 
-> Status: active development. The current MVP includes the event generator, Kafka/PostgreSQL infrastructure, Spark streaming job, SQL schema, Airflow DAG, and CI checks. Production-hardening items are intentionally tracked as roadmap work.
+> Status: active development. The current repository includes the event generator, Kafka/PostgreSQL infrastructure, Spark streaming job, SQL schema, Airflow DAG, and CI checks. Production-hardening items are intentionally tracked as roadmap work.
 
 ## Architecture
 
