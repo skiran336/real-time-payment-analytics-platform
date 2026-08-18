@@ -1,6 +1,6 @@
 # Real-Time Payment Analytics & Data Quality Platform
 
-An in-progress data engineering project that combines **Kafka**, **Spark Structured Streaming**, **Airflow**, **PostgreSQL**, and **Docker** to model real-time payment ingestion, validation, de-duplication, scheduled reconciliation, and data-quality reporting.
+An in-progress data engineering project that combines **Kafka**, **Spark Structured Streaming**, **Airflow**, **PostgreSQL**, and **Docker** to model real-time payment ingestion, validation, scheduled reconciliation, and data-quality reporting.
 
 > Status: active development. The current repository includes the event generator, Kafka/PostgreSQL infrastructure, Spark streaming job, SQL schema, Airflow DAG, and CI checks. Production-hardening items are intentionally tracked as roadmap work.
 
@@ -21,9 +21,9 @@ flowchart LR
 ## What the MVP demonstrates
 
 - Streaming ingestion through Kafka.
-- Spark Structured Streaming JSON parsing and event-time processing.
+- Spark Structured Streaming JSON parsing with Kafka partition/offset traceability.
 - Required-field, amount, status, payment-method, country, and currency validation.
-- Duplicate transaction handling with watermark-based de-duplication.
+- Explicit micro-batch sizing and JDBC write-partition control.
 - Retention of invalid records with rejection reasons.
 - PostgreSQL persistence and daily aggregate tables.
 - Airflow orchestration for reconciliation and data-quality summaries.
@@ -142,7 +142,7 @@ Current rules reject events when they contain:
 - unsupported payment status;
 - unsupported payment method.
 
-Duplicate valid transaction IDs are de-duplicated in the streaming state using an event-time watermark.
+Duplicate handling is intentionally deferred to the upcoming stateful-processing milestone, where watermark semantics and recovery behavior will be implemented and tested together.
 
 ## Testing
 
