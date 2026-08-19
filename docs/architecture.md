@@ -23,6 +23,12 @@
 
 Milestone 1 covers ingestion and stateless transformations: Kafka source metadata, explicit schema parsing, validation, valid/rejected routing, and deliberate partition control. Event-time watermarking and cross-batch duplicate removal are deferred to the stateful-processing milestone.
 
+## Spark Chapter 5: memory and performance
+
+Each `foreachBatch` micro-batch produces one validated DataFrame that is reused by the valid and rejected branches. The job persists that validated result with `MEMORY_AND_DISK`, rather than caching the raw parsed input, so validation expressions are materialized once and partitions that do not fit in storage memory may spill to disk. The `finally` block always calls `unpersist()` so completed micro-batches do not accumulate in executor storage memory.
+
+This cache is justified because the validated DataFrame feeds two actions. Do not extend caching to one-use DataFrames without evidence from the Spark UI. When diagnosing performance, inspect the micro-batch stage for task-duration skew, peak execution memory, spill, GC time, shuffle read/write, failed tasks, and executor loss before changing executor sizes or partition counts.
+
 ## MVP limitations
 
 This repository is intentionally a local-development project, not a production deployment. Authentication, secrets management, schema registry, multi-broker Kafka, HA Postgres, centralized metrics, and Kubernetes deployment are future work.
