@@ -24,6 +24,7 @@ flowchart LR
 - Spark Structured Streaming JSON parsing with Kafka partition/offset traceability.
 - Required-field, amount, status, payment-method, country, and currency validation.
 - Explicit micro-batch sizing and JDBC write-partition control.
+- Reused validated micro-batches persisted with disk fallback and explicit cleanup.
 - Retention of invalid records with rejection reasons.
 - PostgreSQL persistence and daily aggregate tables.
 - Airflow orchestration for reconciliation and data-quality summaries.

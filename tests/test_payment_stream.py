@@ -5,9 +5,12 @@ import pytest
 pyspark = pytest.importorskip("pyspark")
 
 from pyspark.sql import SparkSession
+from pyspark.storagelevel import StorageLevel
 
+from src.streaming import payment_stream
 from src.streaming.payment_stream import (
     parse_kafka_events,
+    prepare_checked_batch,
     prepare_for_jdbc,
     split_valid_and_rejected,
 )
@@ -87,3 +90,41 @@ def test_prepare_for_jdbc_controls_output_partitions(spark):
 def test_prepare_for_jdbc_rejects_invalid_partition_count(spark):
     with pytest.raises(ValueError, match="at least 1"):
         prepare_for_jdbc(spark.range(1), num_partitions=0)
+
+
+def test_checked_batch_uses_memory_and_disk_storage(spark):
+    kafka_df = spark.createDataFrame(
+        [kafka_row(valid_payment())],
+        "value binary, topic string, partition int, offset long, timestamp timestamp",
+    )
+    parsed = parse_kafka_events(kafka_df)
+
+    checked = prepare_checked_batch(parsed)
+    try:
+        assert checked.storageLevel == StorageLevel.MEMORY_AND_DISK
+        assert checked.select("validation_errors").first().validation_errors == ""
+    finally:
+        checked.unpersist()
+
+
+def test_process_batch_releases_cached_validation_result(spark, monkeypatch):
+    kafka_df = spark.createDataFrame(
+        [kafka_row(valid_payment())],
+        "value binary, topic string, partition int, offset long, timestamp timestamp",
+    )
+    parsed = parse_kafka_events(kafka_df)
+    captured = {}
+    original_route = payment_stream.route_checked_payments
+
+    def capture_route(checked):
+        captured["checked"] = checked
+        assert checked.storageLevel == StorageLevel.MEMORY_AND_DISK
+        return original_route(checked)
+
+    monkeypatch.setattr(payment_stream, "route_checked_payments", capture_route)
+    monkeypatch.setattr(payment_stream, "write_valid_batch", lambda _df, _batch_id: None)
+    monkeypatch.setattr(payment_stream, "write_rejected_batch", lambda _df, _batch_id: None)
+
+    payment_stream.process_batch(parsed, batch_id=7)
+
+    assert captured["checked"].storageLevel == StorageLevel.NONE

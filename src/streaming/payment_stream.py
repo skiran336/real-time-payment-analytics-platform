@@ -3,6 +3,7 @@ import os
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+from pyspark.storagelevel import StorageLevel
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "payments.raw")
@@ -69,12 +70,20 @@ def parse_kafka_events(kafka_df: DataFrame) -> DataFrame:
     )
 
 
-def split_valid_and_rejected(df: DataFrame) -> tuple[DataFrame, DataFrame]:
-    checked = add_validation_columns(df)
+def route_checked_payments(checked: DataFrame) -> tuple[DataFrame, DataFrame]:
     return (
         checked.where(F.length("validation_errors") == 0),
         checked.where(F.length("validation_errors") > 0),
     )
+
+
+def split_valid_and_rejected(df: DataFrame) -> tuple[DataFrame, DataFrame]:
+    return route_checked_payments(add_validation_columns(df))
+
+
+def prepare_checked_batch(df: DataFrame) -> DataFrame:
+    """Validate once and retain the reused result with a disk fallback."""
+    return add_validation_columns(df).persist(StorageLevel.MEMORY_AND_DISK)
 
 
 def prepare_for_jdbc(df: DataFrame, num_partitions: int = JDBC_WRITE_PARTITIONS) -> DataFrame:
@@ -135,16 +144,16 @@ def write_rejected_batch(batch_df: DataFrame, batch_id: int) -> None:
 
 
 def process_batch(batch_df: DataFrame, batch_id: int) -> None:
-    """Validate one micro-batch once, then route its two outputs."""
-    batch_df.persist()
+    """Validate and retain one micro-batch, then route its two outputs."""
+    checked = prepare_checked_batch(batch_df)
     try:
-        if batch_df.isEmpty():
+        if checked.isEmpty():
             return
-        valid, rejected = split_valid_and_rejected(batch_df)
+        valid, rejected = route_checked_payments(checked)
         write_valid_batch(valid, batch_id)
         write_rejected_batch(rejected, batch_id)
     finally:
-        batch_df.unpersist()
+        checked.unpersist()
 
 
 def build_spark_session() -> SparkSession:
