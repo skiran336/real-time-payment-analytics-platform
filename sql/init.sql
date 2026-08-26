@@ -38,3 +38,15 @@ CREATE TABLE IF NOT EXISTS data_quality_daily (
     rejection_rate NUMERIC(8, 5) NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS streaming_batch_quality (
+    stream_name VARCHAR(128) NOT NULL,
+    batch_id BIGINT NOT NULL,
+    processed_count BIGINT NOT NULL CHECK (processed_count >= 0),
+    valid_count BIGINT NOT NULL CHECK (valid_count >= 0),
+    rejected_count BIGINT NOT NULL CHECK (rejected_count >= 0),
+    rejection_rate NUMERIC(8, 5) NOT NULL CHECK (rejection_rate BETWEEN 0 AND 1),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (stream_name, batch_id),
+    CHECK (processed_count = valid_count + rejected_count)
+);

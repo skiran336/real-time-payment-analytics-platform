@@ -12,6 +12,7 @@ flowchart LR
     K --> S[Spark Structured Streaming]
     S -->|valid + deduplicated| PG[(PostgreSQL payments)]
     S -->|validation failures| R[(PostgreSQL rejected_payments)]
+    S -->|batch counters + rate| B[(streaming_batch_quality)]
     PG --> A[Airflow Daily DAG]
     R --> A
     A --> M[(daily_payment_metrics)]
@@ -26,6 +27,8 @@ flowchart LR
 - Explicit micro-batch sizing and JDBC write-partition control.
 - Reused validated micro-batches persisted with disk fallback and explicit cleanup.
 - Retention of invalid records with rejection reasons.
+- Idempotent micro-batch quality metrics with processed, valid, rejected, and rejection-rate counters.
+- Structured JSON quality logs for each non-empty Spark micro-batch.
 - PostgreSQL persistence and daily aggregate tables.
 - Airflow orchestration for reconciliation and data-quality summaries.
 - Dockerized local Kafka/PostgreSQL infrastructure.
@@ -121,7 +124,12 @@ docker compose exec postgres psql -U payments -d payments \
 
 docker compose exec postgres psql -U payments -d payments \
   -c "SELECT reason, COUNT(*) FROM rejected_payments GROUP BY reason ORDER BY COUNT(*) DESC;"
+
+docker compose exec postgres psql -U payments -d payments \
+  -c "SELECT * FROM streaming_batch_quality ORDER BY updated_at DESC LIMIT 10;"
 ```
+
+If PostgreSQL is already using an existing volume, apply new idempotent schema additions with `make schema`. Docker's initialization scripts only run when the database volume is first created.
 
 ## End-to-end smoke test
 
@@ -132,7 +140,7 @@ source .venv/bin/activate
 make smoke
 ```
 
-The smoke test starts Kafka and PostgreSQL, creates the topic, launches the Spark stream, publishes 20 guaranteed-valid and 20 guaranteed-invalid events, and waits until the corresponding row counts appear in `payments` and `rejected_payments`. It stops the Spark process when finished but leaves the Docker services running for inspection; use `make down` afterward.
+The smoke test starts Kafka and PostgreSQL, reapplies the idempotent schema, creates the topic, launches the Spark stream, publishes 20 guaranteed-valid and 20 guaranteed-invalid events, and verifies the payment, rejection, and batch-quality counters. It stops the Spark process when finished but leaves the Docker services running for inspection; use `make down` afterward.
 
 The test is non-destructive: it records the existing table counts and verifies increases instead of truncating project data. Override its defaults with `SMOKE_VALID_EVENT_COUNT`, `SMOKE_INVALID_EVENT_COUNT`, `SMOKE_WAIT_SECONDS`, or `PYTHON_BIN` when needed.
 
@@ -157,6 +165,12 @@ Current rules reject events when they contain:
 - unsupported payment method.
 
 Duplicate handling is intentionally deferred to the upcoming stateful-processing milestone, where watermark semantics and recovery behavior will be implemented and tested together.
+
+## Streaming data-quality metrics
+
+For every non-empty micro-batch, Spark calculates `processed_count`, `valid_count`, `rejected_count`, and `rejection_rate` from the cached validated DataFrame. The row is stored in `streaming_batch_quality` using `(stream_name, batch_id)` as its primary key. Retrying the same Spark batch therefore updates its metric instead of inserting a duplicate metric row.
+
+The metrics write occurs after the valid and rejected sinks. This makes the metric mean that both sink-write steps completed, but it does not make all three writes one atomic transaction. End-to-end sink idempotency remains a separate production-hardening concern.
 
 ## Testing
 

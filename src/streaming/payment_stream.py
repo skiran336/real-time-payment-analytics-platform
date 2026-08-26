@@ -1,5 +1,9 @@
+import json
 import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
+import psycopg2
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
@@ -10,6 +14,10 @@ KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "payments.raw")
 JDBC_URL = os.getenv("JDBC_URL", "jdbc:postgresql://localhost:5432/payments")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "payments")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "payments")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+POSTGRES_DB = os.getenv("POSTGRES_DB", "payments")
+STREAM_NAME = os.getenv("STREAM_NAME", "payment-quality")
 CHECKPOINT_ROOT = os.getenv("CHECKPOINT_ROOT", "spark-checkpoints")
 MAX_OFFSETS_PER_TRIGGER = int(os.getenv("MAX_OFFSETS_PER_TRIGGER", "10000"))
 SHUFFLE_PARTITIONS = int(os.getenv("SHUFFLE_PARTITIONS", "6"))
@@ -28,6 +36,16 @@ PAYMENT_SCHEMA = T.StructType(
         T.StructField("country", T.StringType()),
     ]
 )
+
+
+@dataclass(frozen=True)
+class BatchQualityMetrics:
+    stream_name: str
+    batch_id: int
+    processed_count: int
+    valid_count: int
+    rejected_count: int
+    rejection_rate: float
 
 
 def add_validation_columns(df: DataFrame) -> DataFrame:
@@ -93,6 +111,81 @@ def prepare_for_jdbc(df: DataFrame, num_partitions: int = JDBC_WRITE_PARTITIONS)
     return df.repartition(num_partitions)
 
 
+def calculate_batch_quality(checked: DataFrame, batch_id: int) -> BatchQualityMetrics:
+    """Calculate all quality counters in one aggregation over the cached batch."""
+    row = checked.agg(
+        F.count("*").alias("processed_count"),
+        F.sum(F.when(F.length("validation_errors") == 0, 1).otherwise(0)).alias("valid_count"),
+        F.sum(F.when(F.length("validation_errors") > 0, 1).otherwise(0)).alias("rejected_count"),
+    ).first()
+    processed_count = int(row.processed_count)
+    valid_count = int(row.valid_count or 0)
+    rejected_count = int(row.rejected_count or 0)
+    rejection_rate = rejected_count / processed_count if processed_count else 0.0
+    return BatchQualityMetrics(
+        stream_name=STREAM_NAME,
+        batch_id=batch_id,
+        processed_count=processed_count,
+        valid_count=valid_count,
+        rejected_count=rejected_count,
+        rejection_rate=rejection_rate,
+    )
+
+
+def write_batch_quality(metrics: BatchQualityMetrics) -> None:
+    """Upsert one metric row so retrying a Spark batch does not duplicate it."""
+    sql = """
+        INSERT INTO streaming_batch_quality (
+            stream_name, batch_id, processed_count, valid_count,
+            rejected_count, rejection_rate, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (stream_name, batch_id)
+        DO UPDATE SET
+            processed_count = EXCLUDED.processed_count,
+            valid_count = EXCLUDED.valid_count,
+            rejected_count = EXCLUDED.rejected_count,
+            rejection_rate = EXCLUDED.rejection_rate,
+            updated_at = EXCLUDED.updated_at;
+    """
+    with psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            sql,
+            (
+                metrics.stream_name,
+                metrics.batch_id,
+                metrics.processed_count,
+                metrics.valid_count,
+                metrics.rejected_count,
+                metrics.rejection_rate,
+                datetime.now(timezone.utc),
+            ),
+        )
+
+
+def log_batch_quality(metrics: BatchQualityMetrics) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "stream_batch_quality",
+                "stream_name": metrics.stream_name,
+                "batch_id": metrics.batch_id,
+                "processed_count": metrics.processed_count,
+                "valid_count": metrics.valid_count,
+                "rejected_count": metrics.rejected_count,
+                "rejection_rate": round(metrics.rejection_rate, 5),
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def jdbc_options(table: str) -> dict:
     return {
         "url": JDBC_URL,
@@ -149,9 +242,12 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
     try:
         if checked.isEmpty():
             return
+        metrics = calculate_batch_quality(checked, batch_id)
         valid, rejected = route_checked_payments(checked)
         write_valid_batch(valid, batch_id)
         write_rejected_batch(rejected, batch_id)
+        write_batch_quality(metrics)
+        log_batch_quality(metrics)
     finally:
         checked.unpersist()
 
