@@ -1,10 +1,13 @@
-.PHONY: up down topic producer stream smoke test
+.PHONY: up down schema topic producer stream smoke test
 
 up:
 	docker compose up -d
 
 down:
 	docker compose down
+
+schema:
+	docker compose exec -T postgres psql -U payments -d payments < sql/init.sql
 
 topic:
 	./scripts/create_topic.sh
