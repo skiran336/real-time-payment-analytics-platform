@@ -123,6 +123,19 @@ docker compose exec postgres psql -U payments -d payments \
   -c "SELECT reason, COUNT(*) FROM rejected_payments GROUP BY reason ORDER BY COUNT(*) DESC;"
 ```
 
+## End-to-end smoke test
+
+After installing the prerequisites and Python dependencies, run:
+
+```bash
+source .venv/bin/activate
+make smoke
+```
+
+The smoke test starts Kafka and PostgreSQL, creates the topic, launches the Spark stream, publishes 20 guaranteed-valid and 20 guaranteed-invalid events, and waits until the corresponding row counts appear in `payments` and `rejected_payments`. It stops the Spark process when finished but leaves the Docker services running for inspection; use `make down` afterward.
+
+The test is non-destructive: it records the existing table counts and verifies increases instead of truncating project data. Override its defaults with `SMOKE_VALID_EVENT_COUNT`, `SMOKE_INVALID_EVENT_COUNT`, `SMOKE_WAIT_SECONDS`, or `PYTHON_BIN` when needed.
+
 ## Airflow
 
 The DAG is in `airflow/dags/payment_quality_dag.py` and targets **Airflow 3.x** using the stable `airflow.sdk` authoring API. For local Airflow, use the official Docker Compose quick-start, mount this repository's `airflow/dags` directory, install `psycopg2-binary`, and pass the PostgreSQL environment variables from `.env`.
@@ -155,7 +168,7 @@ ruff check src tests airflow/dags
 
 ## Roadmap
 
-- [ ] Add automated integration test covering Kafka → Spark → PostgreSQL.
+- [x] Add a repeatable local smoke test covering Kafka → Spark → PostgreSQL.
 - [ ] Publish streaming throughput and latency benchmark results.
 - [ ] Add Grafana dashboard and Prometheus-compatible metrics.
 - [ ] Route rejected records to a dedicated Kafka dead-letter topic for replay.
